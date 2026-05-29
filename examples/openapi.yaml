@@ -1,0 +1,51 @@
+openapi: 3.0.3
+info:
+  title: smart-k6 Example API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /users/{id}:
+    get:
+      operationId: getUser
+      summary: Get user
+      description: Returns a single user by id.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: ok
+  /orders:
+    post:
+      operationId: createOrder
+      summary: Create order
+      description: Creates a new order.
+      parameters:
+        - name: userId
+          in: query
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - productId
+                - quantity
+              properties:
+                productId:
+                  type: integer
+                quantity:
+                  type: integer
+                memo:
+                  type: string
+      responses:
+        "201":
+          description: created

@@ -1,0 +1,7 @@
+.omx/
+.DS_Store
+/sk6
+generated_script.js
+k6-summary.json
+report.html
+sk6-results/
