@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/hyunseok/smart-k6/internal/ai"
+	"github.com/hyunseok/smart-k6/internal/evidence"
 	"github.com/hyunseok/smart-k6/internal/k6"
 	"github.com/hyunseok/smart-k6/internal/openapi"
 	"github.com/hyunseok/smart-k6/internal/report"
@@ -44,6 +45,7 @@ type rootOptions struct {
 	allowUnsafe     bool
 	includeCommands bool
 	clean           bool
+	fromTests       string
 
 	authToken         string
 	authTokenFile     string
@@ -100,6 +102,7 @@ func newRootCommand() *cobra.Command {
 	rootCmd.Flags().BoolVar(&opts.allowUnsafe, "allow-unsafe", false, "Allow static mode to call non-GET or auth-required operations from the spec")
 	rootCmd.Flags().BoolVar(&opts.includeCommands, "include-commands", false, "Include static POST/PUT/PATCH command operations; DELETE still requires --allow-unsafe")
 	rootCmd.Flags().BoolVar(&opts.clean, "clean", false, "Remove generated script, k6 summary, and HTML report after the command finishes")
+	rootCmd.Flags().StringVar(&opts.fromTests, "from-tests", "", "Read JSON test evidence and synthesize a precise scenario")
 	rootCmd.Flags().StringVar(&opts.authToken, "auth-token", "", "Bearer token for auth-required operations; passed to k6 as AUTH_TOKEN")
 	rootCmd.Flags().StringVar(&opts.authTokenFile, "auth-token-file", "", "Read bearer token from a local file and pass it to k6 as AUTH_TOKEN")
 	rootCmd.Flags().StringVar(&opts.authLoginPath, "auth-login-path", "", "Login endpoint path or URL used to fetch a bearer token before running k6")
@@ -160,7 +163,7 @@ func ask(reader *bufio.Reader, out io.Writer, label string) (string, error) {
 }
 
 func shouldPromptForMode(cmd *cobra.Command, opts rootOptions) bool {
-	if opts.yes || opts.prompt != "" || opts.allowUnsafe {
+	if opts.yes || opts.prompt != "" || opts.allowUnsafe || opts.fromTests != "" {
 		return false
 	}
 	return true
@@ -535,9 +538,6 @@ func selectMode(summary openapi.SpecSummary, opts *rootOptions, in io.Reader, ou
 		}
 
 		defaultSelection := "1"
-		if opts.runK6 {
-			defaultSelection = "2"
-		}
 		choice, err := ask(reader, out, "Selection ["+defaultSelection+"]")
 		if err != nil {
 			return err
@@ -550,9 +550,20 @@ func selectMode(summary openapi.SpecSummary, opts *rootOptions, in io.Reader, ou
 			opts.includeCommands = false
 			return askRunAfterGenerating(opts, reader, out)
 		case "2":
-			opts.includeCommands = true
+			path, err := ask(reader, out, "Test evidence JSON path")
+			if err != nil {
+				return err
+			}
+			if strings.TrimSpace(path) == "" {
+				return fmt.Errorf("test evidence JSON path is required")
+			}
+			opts.fromTests = path
+			opts.includeCommands = false
 			return askRunAfterGenerating(opts, reader, out)
 		case "3":
+			opts.includeCommands = true
+			return askRunAfterGenerating(opts, reader, out)
+		case "4":
 			prompt, err := ask(reader, out, "AI scenario prompt")
 			if err != nil {
 				return err
@@ -562,7 +573,7 @@ func selectMode(summary openapi.SpecSummary, opts *rootOptions, in io.Reader, ou
 			}
 			opts.prompt = prompt
 			return askRunAfterGenerating(opts, reader, out)
-		case "4":
+		case "5":
 			confirm, err := ask(reader, out, "This may call POST/PATCH/DELETE/auth APIs. Type allow to continue")
 			if err != nil {
 				return err
@@ -572,7 +583,7 @@ func selectMode(summary openapi.SpecSummary, opts *rootOptions, in io.Reader, ou
 			}
 			opts.allowUnsafe = true
 			return askRunAfterGenerating(opts, reader, out)
-		case "5", "settings", "config":
+		case "6", "settings", "config":
 			if err := configureRunSettings(summary, opts, reader, out); err != nil {
 				return err
 			}
@@ -623,19 +634,25 @@ func renderModeMenu(summary openapi.SpecSummary, opts *rootOptions, out io.Write
 	if _, err := fmt.Fprintln(out, "  1) Safe public read scenario (GET/HEAD only)"); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintln(out, "  2) Mixed read/command scenario"); err != nil {
+	if _, err := fmt.Fprintln(out, "  2) Precise scenario from test evidence JSON"); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(out, "     Uses recorded/tested flows with request overrides and exact checks."); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(out, "  3) Mixed read/command scenario"); err != nil {
 		return err
 	}
 	if _, err := fmt.Fprintln(out, "     Includes POST/PUT/PATCH and excludes DELETE; may create or update data."); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintln(out, "  3) Enter AI scenario prompt"); err != nil {
+	if _, err := fmt.Fprintln(out, "  4) Enter AI scenario prompt"); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintln(out, "  4) Allow unsafe static all operations"); err != nil {
+	if _, err := fmt.Fprintln(out, "  5) Allow unsafe static all operations"); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintln(out, "  5) Adjust run settings"); err != nil {
+	if _, err := fmt.Fprintln(out, "  6) Adjust run settings"); err != nil {
 		return err
 	}
 	if _, err := fmt.Fprintln(out, "  q) Cancel"); err != nil {
@@ -850,6 +867,18 @@ func cleanupFiles(paths ...string) {
 }
 
 func buildScenario(ctx context.Context, summary openapi.SpecSummary, opts rootOptions) (scenario.Plan, error) {
+	if strings.TrimSpace(opts.fromTests) != "" {
+		file, err := evidence.Load(opts.fromTests)
+		if err != nil {
+			return scenario.Plan{}, err
+		}
+		plan, err := evidence.Synthesize(file, summary)
+		if err != nil {
+			return scenario.Plan{}, err
+		}
+		fmt.Printf("sk6: synthesized scenario from test evidence %s\n", opts.fromTests)
+		return plan, nil
+	}
 	if opts.prompt == "" {
 		return buildStaticScenario(summary, opts)
 	}
@@ -886,28 +915,51 @@ func buildScenario(ctx context.Context, summary openapi.SpecSummary, opts rootOp
 
 func buildStaticScenario(summary openapi.SpecSummary, opts rootOptions) (scenario.Plan, error) {
 	if opts.allowUnsafe {
-		return scenario.DefaultPlan(apiIDs(summary.Operations)), nil
+		return planFromOperations(summary.Operations), nil
 	}
 
-	ids := make([]string, 0, len(summary.Operations))
+	operations := make([]openapi.OperationSummary, 0, len(summary.Operations))
 	for _, operation := range summary.Operations {
 		if opts.includeCommands {
 			if isStaticCommandMixOperation(operation, hasRuntimeAuthConfigured(opts)) {
-				ids = append(ids, operation.APIID)
+				operations = append(operations, operation)
 			}
 			continue
 		}
 		if isSafeStaticOperation(operation) {
-			ids = append(ids, operation.APIID)
+			operations = append(operations, operation)
 		}
 	}
-	if len(ids) == 0 {
+	if len(operations) == 0 {
 		if opts.includeCommands {
 			return scenario.Plan{}, fmt.Errorf("no static read/command operations found; configure auth, provide a scenario prompt, or rerun with --allow-unsafe against disposable data")
 		}
 		return scenario.Plan{}, fmt.Errorf("no safe unauthenticated GET/HEAD operations found; provide a scenario prompt or rerun with --allow-unsafe against disposable data")
 	}
-	return scenario.DefaultPlan(ids), nil
+	return planFromOperations(operations), nil
+}
+
+func planFromOperations(operations []openapi.OperationSummary) scenario.Plan {
+	steps := make([]scenario.Step, 0, len(operations))
+	for i, operation := range operations {
+		steps = append(steps, scenario.Step{
+			Step:             i + 1,
+			APIID:            operation.APIID,
+			ExtractVariables: map[string]string{},
+			UseVariables:     map[string]string{},
+			Checks:           operationStatusChecks(operation),
+		})
+	}
+	return scenario.Plan{Steps: steps}
+}
+
+func operationStatusChecks(operation openapi.OperationSummary) []scenario.Check {
+	for _, status := range operation.ResponseStatuses {
+		if status >= 200 && status < 300 {
+			return []scenario.Check{{Type: "status", Operator: "eq", Value: status}}
+		}
+	}
+	return nil
 }
 
 func countSafeStaticOperations(operations []openapi.OperationSummary) int {
@@ -995,6 +1047,11 @@ func validateScenario(plan scenario.Plan, operations []openapi.OperationSummary)
 				return fmt.Errorf("scenario step %d has invalid variable binding %q -> %q", step.Step, field, variable)
 			}
 		}
+		for _, check := range step.Checks {
+			if err := validateCheck(step.Step, check); err != nil {
+				return err
+			}
+		}
 	}
 
 	for expected := 1; expected <= len(plan.Steps); expected++ {
@@ -1003,6 +1060,37 @@ func validateScenario(plan scenario.Plan, operations []openapi.OperationSummary)
 		}
 	}
 	return nil
+}
+
+func validateCheck(step int, check scenario.Check) error {
+	checkType := strings.TrimSpace(check.Type)
+	if checkType == "" {
+		return fmt.Errorf("scenario step %d has check with empty type", step)
+	}
+	switch strings.TrimSpace(check.Operator) {
+	case "", "eq", "exists", "matches", "gte", "lte":
+	default:
+		return fmt.Errorf("scenario step %d has unsupported check operator %q", step, check.Operator)
+	}
+	switch checkType {
+	case "status":
+		if check.Value == nil {
+			return fmt.Errorf("scenario step %d has status check with empty value", step)
+		}
+		return nil
+	case "json_path", "header":
+		if strings.TrimSpace(check.Path) == "" {
+			return fmt.Errorf("scenario step %d has %s check with empty path", step, checkType)
+		}
+		return nil
+	case "body_contains":
+		if check.Value == nil {
+			return fmt.Errorf("scenario step %d has body_contains check with empty value", step)
+		}
+		return nil
+	default:
+		return fmt.Errorf("scenario step %d has unsupported check type %q", step, check.Type)
+	}
 }
 
 func apiIDs(operations []openapi.OperationSummary) []string {

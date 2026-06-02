@@ -14,6 +14,7 @@ type promptOperation struct {
 	Summary     string            `json:"summary,omitempty"`
 	Params      []promptParameter `json:"params,omitempty"`
 	RequestBody any               `json:"request_body,omitempty"`
+	Responses   []int             `json:"responses,omitempty"`
 	Auth        bool              `json:"auth,omitempty"`
 }
 
@@ -33,6 +34,7 @@ func marshalPromptOperations(operations []openapi.OperationSummary) ([]byte, err
 			Summary:     truncateText(displayOperationSummary(operation), 160),
 			Params:      promptParameters(operation.Parameters),
 			RequestBody: compactPromptValue(operation.RequestBody, 0),
+			Responses:   operation.ResponseStatuses,
 			Auth:        operation.RequiresAuth,
 		})
 	}

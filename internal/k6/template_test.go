@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/hyunseok/smart-k6/internal/openapi"
+	"github.com/hyunseok/smart-k6/internal/scenario"
 )
 
 func TestRenderUsesConstantArrivalRateAndScale(t *testing.T) {
@@ -62,7 +63,7 @@ func TestRenderOmitsAuthorizationHeaderWhenTokenIsMissing(t *testing.T) {
 
 	assertContains(t, script, "return __ENV.AUTH_TOKEN || vars.token || vars.accessToken || undefined;")
 	assertContains(t, script, "function cleanObject(object)")
-	assertContains(t, script, "const headers = cleanObject(applyVariableBindings(normalizeValue(operation.headers || {}), bindings));")
+	assertContains(t, script, "const headers = cleanObject(applyVariableBindings(normalizeValue(mergeObjects(operation.headers, overrides.headers)), bindings));")
 }
 
 func TestRenderUsesPathParameterSamples(t *testing.T) {
@@ -87,8 +88,43 @@ func TestRenderUsesPathParameterSamples(t *testing.T) {
 
 	assertContains(t, script, "function randomUUID()")
 	assertContains(t, script, `"companyId":"__RANDOM_UUID__"`)
-	assertContains(t, script, `let url = BASE_URL + buildPath(operation.path, operation.pathParams || {}, bindings);`)
+	assertContains(t, script, `let url = BASE_URL + buildPath(operation.path, pathParams || {}, bindings);`)
 	assertContains(t, script, "return encodeURIComponent(String(normalizeValue(defaultValue)));")
+}
+
+func TestRenderUsesScenarioOverridesAndChecks(t *testing.T) {
+	script, err := Render(ScriptData{
+		TPS:      1,
+		Scale:    "1M",
+		Duration: "1m",
+		Operations: []openapi.OperationSummary{
+			{APIID: "getOrder", Method: "GET", Path: "/orders/{id}"},
+		},
+		Scenario: scenario.Plan{Steps: []scenario.Step{
+			{
+				Step:  1,
+				APIID: "getOrder",
+				Overrides: scenario.RequestOverride{
+					PathParams:  map[string]any{"id": 42},
+					QueryParams: map[string]any{"include": "items"},
+				},
+				Checks: []scenario.Check{
+					{Type: "status", Operator: "eq", Value: 200},
+					{Type: "json_path", Path: "data.id", Operator: "exists"},
+				},
+				ExtractVariables: map[string]string{},
+				UseVariables:     map[string]string{},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+
+	assertContains(t, script, `"path_params":{"id":42}`)
+	assertContains(t, script, `"query_params":{"include":"items"}`)
+	assertContains(t, script, "function evaluateCheck(spec, res, jsonBody)")
+	assertContains(t, script, "return compareValues(res.status, operator, spec.value);")
 }
 
 func assertContains(t *testing.T, got, want string) {

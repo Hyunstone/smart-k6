@@ -55,6 +55,9 @@ paths:
 	if operation.APIID != "getUser" {
 		t.Fatalf("APIID = %q", operation.APIID)
 	}
+	if len(operation.ResponseStatuses) != 1 || operation.ResponseStatuses[0] != 200 {
+		t.Fatalf("ResponseStatuses = %+v", operation.ResponseStatuses)
+	}
 }
 
 func TestParseExtractsQueryAndRequestBodySamples(t *testing.T) {

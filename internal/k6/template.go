@@ -136,8 +136,19 @@ function cleanObject(object) {
   );
 }
 
+function mergeObjects(base, override) {
+  return Object.assign({}, base || {}, override || {});
+}
+
+function hasOwn(object, key) {
+  return Object.prototype.hasOwnProperty.call(object || {}, key);
+}
+
 function applyVariableBindings(target, bindings) {
   if (!target || !bindings) {
+    return target;
+  }
+  if (typeof target !== 'object') {
     return target;
   }
   for (const [field, variable] of Object.entries(bindings)) {
@@ -165,9 +176,9 @@ function buildPath(path, defaults, bindings) {
   });
 }
 
-function buildURL(operation, bindings) {
-  let url = BASE_URL + buildPath(operation.path, operation.pathParams || {}, bindings);
-  const queryParams = applyVariableBindings(normalizeValue(operation.queryParams || {}), bindings);
+function buildURL(operation, pathParams, queryParams, bindings) {
+  let url = BASE_URL + buildPath(operation.path, pathParams || {}, bindings);
+  queryParams = applyVariableBindings(normalizeValue(queryParams || {}), bindings);
   const encoded = [];
   for (const [key, value] of Object.entries(queryParams)) {
     if (value !== undefined && value !== null && value !== '') {
@@ -180,6 +191,48 @@ function buildURL(operation, bindings) {
   return url + (url.includes('?') ? '&' : '?') + encoded.join('&');
 }
 
+function compareValues(actual, operator, expected) {
+  switch (operator || 'eq') {
+    case 'exists':
+      return actual !== undefined && actual !== null;
+    case 'matches':
+      return new RegExp(String(expected)).test(String(actual));
+    case 'gte':
+      return Number(actual) >= Number(expected);
+    case 'lte':
+      return Number(actual) <= Number(expected);
+    case 'eq':
+    default:
+      return actual === expected;
+  }
+}
+
+function evaluateCheck(spec, res, jsonBody) {
+  const operator = spec.operator || 'eq';
+  switch (spec.type) {
+    case 'status':
+      return compareValues(res.status, operator, spec.value);
+    case 'json_path':
+      return compareValues(readPath(jsonBody, spec.path), operator, spec.value);
+    case 'header':
+      return compareValues(res.headers[spec.path], operator, spec.value);
+    case 'body_contains':
+      return String(res.body || '').includes(String(spec.value));
+    default:
+      return false;
+  }
+}
+
+function checkName(operation, spec) {
+  if (spec.type === 'status') {
+    return operation.method + ' ' + operation.path + ' status ' + (spec.operator || 'eq') + ' ' + spec.value;
+  }
+  if (spec.path) {
+    return operation.method + ' ' + operation.path + ' ' + spec.type + ' ' + spec.path;
+  }
+  return operation.method + ' ' + operation.path + ' ' + spec.type;
+}
+
 export default function () {
   for (const step of scenario) {
     const operation = operations[step.api_id];
@@ -188,27 +241,34 @@ export default function () {
     }
 
     const bindings = step.use_variables || {};
-    const url = buildURL(operation, bindings);
-    const headers = cleanObject(applyVariableBindings(normalizeValue(operation.headers || {}), bindings));
-    const body = applyVariableBindings(normalizeValue(operation.body), bindings);
+    const overrides = normalizeValue(step.overrides || {});
+    const pathParams = mergeObjects(operation.pathParams, overrides.path_params);
+    const queryParams = mergeObjects(operation.queryParams, overrides.query_params);
+    const headers = cleanObject(applyVariableBindings(normalizeValue(mergeObjects(operation.headers, overrides.headers)), bindings));
+    const rawBody = hasOwn(overrides, 'body') ? overrides.body : operation.body;
+    const body = applyVariableBindings(normalizeValue(rawBody), bindings);
+    const url = buildURL(operation, pathParams, queryParams, bindings);
     const payload = body === null || body === undefined ? null : JSON.stringify(body);
     const res = http.request(operation.method, url, payload, {
       headers,
       tags: { name: operation.name },
     });
 
-    const checkName = operation.method + ' ' + operation.path + ' status is 2xx-4xx';
-    check(res, {
-      [checkName]: (r) => r.status >= 200 && r.status < 500,
-    });
+    let jsonBody = {};
+    try {
+      jsonBody = res.json();
+    } catch (error) {
+      jsonBody = {};
+    }
+
+    const checks = step.checks && step.checks.length > 0
+      ? Object.fromEntries(step.checks.map((spec) => [checkName(operation, spec), () => evaluateCheck(spec, res, jsonBody)]))
+      : {
+          [operation.method + ' ' + operation.path + ' status is 2xx-4xx']: (r) => r.status >= 200 && r.status < 500,
+        };
+    check(res, checks);
 
     if (step.extract_variables && Object.keys(step.extract_variables).length > 0) {
-      let jsonBody = {};
-      try {
-        jsonBody = res.json();
-      } catch (error) {
-        jsonBody = {};
-      }
       for (const [name, path] of Object.entries(step.extract_variables)) {
         const extracted = readPath(jsonBody, path);
         if (extracted !== undefined) {

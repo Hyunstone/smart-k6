@@ -31,14 +31,16 @@ When you provide only a spec URL or file in an interactive terminal, sk6 parses 
 ```text
 Choose what to do:
   1) Safe public read scenario (GET/HEAD only)
-  2) Mixed read/command scenario
-  3) Enter AI scenario prompt
-  4) Allow unsafe static all operations
-  5) Adjust run settings
+  2) Precise scenario from test evidence JSON
+  3) Mixed read/command scenario
+  4) Enter AI scenario prompt
+  5) Allow unsafe static all operations
+  6) Adjust run settings
   q) Cancel
 ```
 
 After choosing a scenario type, sk6 asks whether to run k6 or only write the generated script.
+The safe public read option still uses only unauthenticated `GET`/`HEAD` operations, but it reads OpenAPI response definitions and emits exact status checks when concrete 2xx responses are declared.
 `Adjust run settings` shows the current `TPS`, `duration`, `scale`, `base-url`, and auth setup; choose the number for the setting you want to edit, then enter `done` to return to the main menu. Auth values are summarized without printing pasted bearer tokens.
 
 The mixed read/command option excludes `DELETE`, but it can still create or update data through `POST`, `PUT`, or `PATCH`. Use it against disposable or load-test-safe data.
@@ -138,3 +140,36 @@ API key mode is available:
 ```bash
 OPENAI_API_KEY=... sk6 ./openapi.yaml "Create an order, extract the order id, then fetch it" --ai-provider openai-api --run
 ```
+
+## Test Evidence Scenarios
+
+Use `--from-tests` with a JSON evidence file when you already know the exact API flow from tests or fixtures:
+
+```bash
+sk6 ./openapi.yaml --from-tests ./test-evidence.json --run
+```
+
+Evidence calls can provide `api_id` directly, or `method` and `path` to match an OpenAPI operation. Static path values are converted into path parameter overrides when they match templated paths such as `/orders/{id}`.
+
+```json
+{
+  "name": "create order then fetch",
+  "calls": [
+    {
+      "method": "POST",
+      "path": "/orders",
+      "body": { "sku": "A-001" },
+      "expect_status": 201,
+      "extract": { "orderId": "data.id" }
+    },
+    {
+      "method": "GET",
+      "path": "/orders/42",
+      "use": { "id": "orderId" },
+      "expect_status": 200
+    }
+  ]
+}
+```
+
+Supported checks include `expect_status` and explicit `checks` entries with `type` values `status`, `json_path`, `header`, and `body_contains`.

@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/getkin/kin-openapi/openapi2"
@@ -19,15 +20,16 @@ import (
 // OperationSummary is the compact API surface passed to generators and, later,
 // to the LLM scenario mapper.
 type OperationSummary struct {
-	Method       string
-	Path         string
-	Summary      string
-	Description  string
-	OperationID  string
-	APIID        string
-	Parameters   []ParameterSummary
-	RequestBody  any
-	RequiresAuth bool
+	Method           string
+	Path             string
+	Summary          string
+	Description      string
+	OperationID      string
+	APIID            string
+	Parameters       []ParameterSummary
+	RequestBody      any
+	ResponseStatuses []int
+	RequiresAuth     bool
 }
 
 type ParameterSummary struct {
@@ -75,15 +77,16 @@ func Parse(spec string) (SpecSummary, error) {
 			}
 			method = strings.ToUpper(method)
 			summary.Operations = append(summary.Operations, OperationSummary{
-				Method:       method,
-				Path:         path,
-				Summary:      operation.Summary,
-				Description:  operation.Description,
-				OperationID:  operation.OperationID,
-				APIID:        operationAPIID(method, path, operation.OperationID),
-				Parameters:   collectParameters(operation),
-				RequestBody:  requestBodySample(operation),
-				RequiresAuth: operationRequiresAuth(doc, operation),
+				Method:           method,
+				Path:             path,
+				Summary:          operation.Summary,
+				Description:      operation.Description,
+				OperationID:      operation.OperationID,
+				APIID:            operationAPIID(method, path, operation.OperationID),
+				Parameters:       collectParameters(operation),
+				RequestBody:      requestBodySample(operation),
+				ResponseStatuses: collectResponseStatuses(operation),
+				RequiresAuth:     operationRequiresAuth(doc, operation),
 			})
 		}
 	}
@@ -121,6 +124,22 @@ func collectParameters(operation *openapi3.Operation) []ParameterSummary {
 		})
 	}
 	return params
+}
+
+func collectResponseStatuses(operation *openapi3.Operation) []int {
+	if operation == nil || operation.Responses == nil {
+		return nil
+	}
+	statuses := make([]int, 0, len(operation.Responses.Map()))
+	for code := range operation.Responses.Map() {
+		status, err := strconv.Atoi(code)
+		if err != nil || status < 100 || status > 599 {
+			continue
+		}
+		statuses = append(statuses, status)
+	}
+	sort.Ints(statuses)
+	return statuses
 }
 
 func parameterValue(param *openapi3.Parameter) any {

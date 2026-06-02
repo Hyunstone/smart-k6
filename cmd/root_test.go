@@ -73,7 +73,7 @@ func TestShouldPromptForModePromptsForBareSpec(t *testing.T) {
 	}
 }
 
-func TestSelectModeChoosesGenerateAndRunSafeLoadTest(t *testing.T) {
+func TestSelectModeChoosesMixedReadCommandScenario(t *testing.T) {
 	opts := rootOptions{spec: "openapi.yaml"}
 	var out bytes.Buffer
 	err := selectMode(openapi.SpecSummary{
@@ -83,7 +83,7 @@ func TestSelectModeChoosesGenerateAndRunSafeLoadTest(t *testing.T) {
 			{Method: "GET", APIID: "getUser"},
 			{Method: "POST", APIID: "createUser"},
 		},
-	}, &opts, strings.NewReader("2\ny\n"), &out)
+	}, &opts, strings.NewReader("3\ny\n"), &out)
 	if err != nil {
 		t.Fatalf("selectMode() error = %v", err)
 	}
@@ -92,6 +92,19 @@ func TestSelectModeChoosesGenerateAndRunSafeLoadTest(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "2 safe public GET/HEAD") && !strings.Contains(out.String(), "1 safe public GET/HEAD") {
 		t.Fatalf("selection output missing operation summary: %q", out.String())
+	}
+}
+
+func TestSelectModeChoosesPreciseScenarioFromTestEvidence(t *testing.T) {
+	opts := rootOptions{spec: "openapi.yaml"}
+	err := selectMode(openapi.SpecSummary{
+		Operations: []openapi.OperationSummary{{Method: "GET", APIID: "getUser"}},
+	}, &opts, strings.NewReader("2\n./test-evidence.json\ny\n"), &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("selectMode() error = %v", err)
+	}
+	if opts.fromTests != "./test-evidence.json" || !opts.runK6 || opts.includeCommands {
+		t.Fatalf("unexpected opts: %+v", opts)
 	}
 }
 
@@ -120,7 +133,7 @@ func TestSelectModeDefaultsToRunWhenRunFlagWasProvided(t *testing.T) {
 	if !opts.runK6 {
 		t.Fatalf("runK6 should stay true when --run default is accepted: %+v", opts)
 	}
-	if !strings.Contains(out.String(), "Selection [2]") {
+	if !strings.Contains(out.String(), "Selection [1]") {
 		t.Fatalf("selection output should show run default: %q", out.String())
 	}
 }
@@ -131,7 +144,7 @@ func TestSelectModeAllowsSettingsBeforeRun(t *testing.T) {
 	err := selectMode(openapi.SpecSummary{
 		BaseURL:    "https://api.example.com",
 		Operations: []openapi.OperationSummary{{Method: "GET", APIID: "getUser"}},
-	}, &opts, strings.NewReader("5\n1\n25\n2\n30s\n3\n10M\n4\nhttp://localhost:8080\ndone\n2\ny\n"), &out)
+	}, &opts, strings.NewReader("6\n1\n25\n2\n30s\n3\n10M\n4\nhttp://localhost:8080\ndone\n3\ny\n"), &out)
 	if err != nil {
 		t.Fatalf("selectMode() error = %v", err)
 	}
@@ -151,7 +164,7 @@ func TestSelectModeAllowsAuthSettingsBeforeRun(t *testing.T) {
 		Operations: []openapi.OperationSummary{
 			{Method: "GET", APIID: "privateMe", RequiresAuth: true},
 		},
-	}, &opts, strings.NewReader("5\n5\n3\n/tmp/token.txt\ndone\n2\ny\n"), &out)
+	}, &opts, strings.NewReader("6\n5\n3\n/tmp/token.txt\ndone\n3\ny\n"), &out)
 	if err != nil {
 		t.Fatalf("selectMode() error = %v", err)
 	}
@@ -168,7 +181,7 @@ func TestSelectModeShowsSettingErrorAndContinues(t *testing.T) {
 	var out bytes.Buffer
 	err := selectMode(openapi.SpecSummary{
 		Operations: []openapi.OperationSummary{{Method: "GET", APIID: "getUser"}},
-	}, &opts, strings.NewReader("5\n1\n0\n2\n10\ndone\n1\nn\n"), &out)
+	}, &opts, strings.NewReader("6\n1\n0\n2\n10\ndone\n1\nn\n"), &out)
 	if err != nil {
 		t.Fatalf("selectMode() error = %v", err)
 	}
@@ -197,7 +210,7 @@ func TestSelectModeChoosesAIScenarioPrompt(t *testing.T) {
 	opts := rootOptions{spec: "openapi.yaml"}
 	err := selectMode(openapi.SpecSummary{
 		Operations: []openapi.OperationSummary{{Method: "GET", APIID: "getUser"}},
-	}, &opts, strings.NewReader("3\nlogin then get profile\ny\n"), &bytes.Buffer{})
+	}, &opts, strings.NewReader("4\nlogin then get profile\ny\n"), &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("selectMode() error = %v", err)
 	}
@@ -210,7 +223,7 @@ func TestSelectModeRequiresUnsafeConfirmation(t *testing.T) {
 	opts := rootOptions{spec: "openapi.yaml"}
 	err := selectMode(openapi.SpecSummary{
 		Operations: []openapi.OperationSummary{{Method: "POST", APIID: "createUser"}},
-	}, &opts, strings.NewReader("4\nno\n"), &bytes.Buffer{})
+	}, &opts, strings.NewReader("5\nno\n"), &bytes.Buffer{})
 	if err == nil {
 		t.Fatal("selectMode() expected unsafe cancellation error")
 	}
@@ -384,9 +397,27 @@ func TestValidateScenarioAcceptsValidPlan(t *testing.T) {
 	}
 }
 
+func TestBuildScenarioUsesTestEvidence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "evidence.json")
+	if err := os.WriteFile(path, []byte(`{"calls":[{"method":"POST","path":"/orders","expect_status":201,"extract":{"orderId":"data.id"}},{"method":"GET","path":"/orders/42","use":{"id":"orderId"},"expect_status":200}]}`), 0644); err != nil {
+		t.Fatalf("write evidence: %v", err)
+	}
+
+	plan, err := buildScenario(context.Background(), openapi.SpecSummary{Operations: []openapi.OperationSummary{
+		{APIID: "createOrder", Method: "POST", Path: "/orders"},
+		{APIID: "getOrder", Method: "GET", Path: "/orders/{id}"},
+	}}, rootOptions{fromTests: path})
+	if err != nil {
+		t.Fatalf("buildScenario() error = %v", err)
+	}
+	if len(plan.Steps) != 2 || plan.Steps[0].Checks[0].Value != 201 || plan.Steps[1].Overrides.PathParams["id"] != 42 {
+		t.Fatalf("plan = %+v", plan)
+	}
+}
+
 func TestBuildStaticScenarioDefaultsToPublicReadOnlyOperations(t *testing.T) {
 	plan, err := buildStaticScenario(openapi.SpecSummary{Operations: []openapi.OperationSummary{
-		{Method: "GET", APIID: "publicList"},
+		{Method: "GET", APIID: "publicList", ResponseStatuses: []int{200, 404}},
 		{Method: "HEAD", APIID: "publicHead"},
 		{Method: "POST", APIID: "createUser"},
 		{Method: "GET", APIID: "privateMe", RequiresAuth: true},
@@ -400,6 +431,9 @@ func TestBuildStaticScenarioDefaultsToPublicReadOnlyOperations(t *testing.T) {
 	}
 	if plan.Steps[0].APIID != "publicList" || plan.Steps[1].APIID != "publicHead" {
 		t.Fatalf("steps = %+v", plan.Steps)
+	}
+	if len(plan.Steps[0].Checks) != 1 || plan.Steps[0].Checks[0].Value != 200 {
+		t.Fatalf("expected OpenAPI status check on safe read step: %+v", plan.Steps[0])
 	}
 }
 
