@@ -7,6 +7,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
+
+	"github.com/hyunseok/smart-k6/internal/process"
 )
 
 type Options struct {
@@ -26,7 +28,7 @@ func Run(ctx context.Context, opts Options) error {
 		return fmt.Errorf("k6 executable not found; install k6 and retry: %w", err)
 	}
 
-	cmd := exec.CommandContext(ctx, "k6", "run", "--summary-export", opts.SummaryPath, opts.ScriptPath)
+	cmd := process.CommandContext(ctx, "k6", "run", "--summary-export", opts.SummaryPath, opts.ScriptPath)
 	if len(opts.Env) > 0 {
 		cmd.Env = os.Environ()
 		for key, value := range opts.Env {

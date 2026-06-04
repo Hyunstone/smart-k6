@@ -59,7 +59,10 @@ type rootOptions struct {
 
 // Execute runs the sk6 command line interface.
 func Execute() {
-	if err := newRootCommand().Execute(); err != nil {
+	ctx, stop := signalContext(context.Background())
+	defer stop()
+
+	if err := newRootCommand().ExecuteContext(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

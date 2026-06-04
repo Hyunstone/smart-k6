@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/hyunseok/smart-k6/internal/openapi"
+	"github.com/hyunseok/smart-k6/internal/process"
 	"github.com/hyunseok/smart-k6/internal/scenario"
 )
 
@@ -35,7 +36,7 @@ type codexVariableUse struct {
 }
 
 var runCodex = func(ctx context.Context, args []string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "codex", args...)
+	cmd := process.CommandContext(ctx, "codex", args...)
 	return cmd.CombinedOutput()
 }
 
